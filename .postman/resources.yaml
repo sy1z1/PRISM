@@ -1,0 +1,9 @@
+# Use this workspace to collaborate
+workspace:
+  id: dc13faab-171d-4cf1-8484-851f07c656bc
+
+# All resources in the `postman/` folder are automatically registered in Local View.
+# Point to additional files outside the `postman/` folder to register them individually. Example:
+#localResources:
+#  collections:
+#    - ../tests/E2E Test Collection/

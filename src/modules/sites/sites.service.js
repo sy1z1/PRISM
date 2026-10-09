@@ -48,7 +48,8 @@ export const fetchMicroMapData = async (siteId) => {
       surface: asset.surface_type,
       lat: parseFloat(asset.latitude),
       lng: parseFloat(asset.longitude),
-      status: asset.status
+      status: asset.status,
+      imageUrl: asset.image_url
     }))
   };
 };

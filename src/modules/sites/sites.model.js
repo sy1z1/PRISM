@@ -68,7 +68,8 @@ export const getAssetsBySiteId = async (siteId) => {
       a.surface_type,
       a.latitude,
       a.longitude,
-      a.status
+      a.status,
+      a.image_url
     FROM assets a
     JOIN asset_categories c ON a.category_id = c.id
     WHERE a.site_id = $1
