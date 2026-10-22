@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 
 import identityRoutes from './modules/identity/identity.routes.js';
 import sitesRoutes from './modules/sites/sites.routes.js';
+import assetsRoutes from './modules/assets/assets.routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +17,7 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 app.use('/api/identity', identityRoutes);
 app.use('/api/sites', sitesRoutes);
+app.use('/api/assets', assetsRoutes);
 
 const PORT = process.env.PORT || 3000;
 
