@@ -2,6 +2,7 @@ import * as assetsModel from './assets.model.js';
 
 export const fetchDigitalTwinData = async (assetId, { captureId, targetDate }) => {
   const asset = await assetsModel.getAssetWithSiteDetails(assetId);
+  const activeIssue = await assetsModel.getActiveTicketForAsset(assetId);
   if (!asset) {
     throw new Error('ASSET_NOT_FOUND');
   }
@@ -73,6 +74,17 @@ export const fetchDigitalTwinData = async (assetId, { captureId, targetDate }) =
           isLatest: activeCapture.is_latest,
           hotspots,
           hotspotValidation: warningStatus
+        }
+      : null,
+    activeIssue: activeIssue
+      ? {
+          ticketId: activeIssue.id,
+          ticketNumber: activeIssue.ticket_number,
+          category: activeIssue.category,
+          priority: activeIssue.priority,
+          description: activeIssue.description,
+          status: activeIssue.status,
+          reportedOn: activeIssue.created_at
         }
       : null,
     timeline: timeline.map(t => ({

@@ -1,0 +1,158 @@
+"table_schema","table_name","column_name","data_type","is_nullable","column_default"
+"public","asset_captures","id","uuid","NO","uuid_generate_v4()"
+"public","asset_captures","asset_id","uuid","NO",NULL
+"public","asset_captures","image_360_url","character varying","NO",NULL
+"public","asset_captures","captured_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","asset_captures","captured_by","uuid","YES",NULL
+"public","asset_captures","is_latest","boolean","YES","true"
+"public","asset_captures","ignore_hotspot_warning","boolean","YES","false"
+"public","asset_categories","id","uuid","NO","uuid_generate_v4()"
+"public","asset_categories","name","character varying","NO",NULL
+"public","asset_categories","description","text","YES",NULL
+"public","asset_categories","expected_lifespan_months","integer","YES",NULL
+"public","asset_maintenance_logs","id","uuid","NO","uuid_generate_v4()"
+"public","asset_maintenance_logs","asset_id","uuid","NO",NULL
+"public","asset_maintenance_logs","ticket_id","uuid","YES",NULL
+"public","asset_maintenance_logs","maintenance_type","character varying","NO",NULL
+"public","asset_maintenance_logs","performed_by","uuid","YES",NULL
+"public","asset_maintenance_logs","performed_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","asset_maintenance_logs","notes","text","YES",NULL
+"public","assets","id","uuid","NO","uuid_generate_v4()"
+"public","assets","site_id","uuid","YES",NULL
+"public","assets","category_id","uuid","YES",NULL
+"public","assets","name_identifier","character varying","NO",NULL
+"public","assets","material","character varying","YES",NULL
+"public","assets","surface_type","character varying","YES",NULL
+"public","assets","latitude","numeric","NO",NULL
+"public","assets","longitude","numeric","NO",NULL
+"public","assets","installation_date","date","YES",NULL
+"public","assets","status","character varying","YES","'CLEAR'::character varying"
+"public","assets","created_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","assets","updated_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","assets","image_url","character varying","YES",NULL
+"public","capture_hotspots","id","uuid","NO","uuid_generate_v4()"
+"public","capture_hotspots","source_capture_id","uuid","NO",NULL
+"public","capture_hotspots","target_asset_id","uuid","NO",NULL
+"public","capture_hotspots","pitch","numeric","NO",NULL
+"public","capture_hotspots","yaw","numeric","NO",NULL
+"public","capture_hotspots","is_auto_generated","boolean","YES","false"
+"public","capture_hotspots","created_by","uuid","YES",NULL
+"public","capture_hotspots","created_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","maintenance_group_members","id","uuid","NO","uuid_generate_v4()"
+"public","maintenance_group_members","group_id","uuid","NO",NULL
+"public","maintenance_group_members","user_id","uuid","NO",NULL
+"public","maintenance_groups","id","uuid","NO","uuid_generate_v4()"
+"public","maintenance_groups","name","character varying","NO",NULL
+"public","maintenance_groups","group_type","character varying","NO","'THIRD_PARTY'::character varying"
+"public","maintenance_groups","specialty_category","character varying","YES",NULL
+"public","maintenance_groups","group_code","character varying","NO",NULL
+"public","maintenance_groups","contact_email","character varying","YES",NULL
+"public","maintenance_groups","contact_phone","character varying","YES",NULL
+"public","maintenance_groups","created_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","organization_maintenance_groups","id","uuid","NO","uuid_generate_v4()"
+"public","organization_maintenance_groups","organization_id","uuid","NO",NULL
+"public","organization_maintenance_groups","group_id","uuid","NO",NULL
+"public","organization_maintenance_groups","status","character varying","NO","'PENDING'::character varying"
+"public","organization_maintenance_groups","created_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","organizations","id","uuid","NO","uuid_generate_v4()"
+"public","organizations","name","character varying","NO",NULL
+"public","organizations","support_email","character varying","YES",NULL
+"public","organizations","contact_phone","character varying","YES",NULL
+"public","organizations","created_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","permissions","id","uuid","NO","uuid_generate_v4()"
+"public","permissions","name","character varying","NO",NULL
+"public","permissions","description","text","YES",NULL
+"public","permissions","desc_created_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","permissions","desc_updated_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","regions","id","uuid","NO","uuid_generate_v4()"
+"public","regions","name","character varying","NO",NULL
+"public","regions","center_lat","numeric","NO",NULL
+"public","regions","center_lng","numeric","NO",NULL
+"public","regions","boundary_geojson","jsonb","YES",NULL
+"public","regions","created_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","regions","organization_id","uuid","YES",NULL
+"public","role_permissions","role_id","uuid","NO",NULL
+"public","role_permissions","permission_id","uuid","NO",NULL
+"public","roles","id","uuid","NO","uuid_generate_v4()"
+"public","roles","name","character varying","NO",NULL
+"public","roles","description","text","YES",NULL
+"public","roles","role_created_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","roles","role_updated_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","site_capture_logs","id","uuid","NO","uuid_generate_v4()"
+"public","site_capture_logs","site_id","uuid","NO",NULL
+"public","site_capture_logs","captured_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","site_capture_logs","captured_by","uuid","YES",NULL
+"public","site_capture_logs","dataset_url","character varying","YES",NULL
+"public","sites","id","uuid","NO","uuid_generate_v4()"
+"public","sites","region_id","uuid","YES",NULL
+"public","sites","site_code","character varying","NO",NULL
+"public","sites","name","character varying","NO",NULL
+"public","sites","address_location","text","YES",NULL
+"public","sites","latitude","numeric","NO",NULL
+"public","sites","longitude","numeric","NO",NULL
+"public","sites","created_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","sites","updated_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","ticket_assignments","id","uuid","NO","uuid_generate_v4()"
+"public","ticket_assignments","ticket_id","uuid","NO",NULL
+"public","ticket_assignments","assignee_id","uuid","YES",NULL
+"public","ticket_assignments","assigned_by","uuid","YES",NULL
+"public","ticket_assignments","status","character varying","YES","'DISPATCHED'::character varying"
+"public","ticket_assignments","assigned_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","ticket_assignments","started_at","timestamp with time zone","YES",NULL
+"public","ticket_assignments","completed_at","timestamp with time zone","YES",NULL
+"public","ticket_assignments","group_id","uuid","YES",NULL
+"public","ticket_audit_logs","id","uuid","NO","uuid_generate_v4()"
+"public","ticket_audit_logs","ticket_id","uuid","NO",NULL
+"public","ticket_audit_logs","actor_id","uuid","YES",NULL
+"public","ticket_audit_logs","action_type","character varying","NO",NULL
+"public","ticket_audit_logs","old_value","character varying","YES",NULL
+"public","ticket_audit_logs","new_value","character varying","YES",NULL
+"public","ticket_audit_logs","logged_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","ticket_media","id","uuid","NO","uuid_generate_v4()"
+"public","ticket_media","ticket_id","uuid","NO",NULL
+"public","ticket_media","media_url","character varying","NO",NULL
+"public","ticket_media","media_type","character varying","YES","'field_photo'::character varying"
+"public","ticket_media","evidence_stage","character varying","YES","'BEFORE'::character varying"
+"public","ticket_media","uploaded_by","uuid","YES",NULL
+"public","ticket_media","created_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","tickets","id","uuid","NO","uuid_generate_v4()"
+"public","tickets","ticket_number","character varying","NO","('TIX-'::text || nextval('ticket_number_seq'::regclass))"
+"public","tickets","asset_id","uuid","NO",NULL
+"public","tickets","reported_by","uuid","YES",NULL
+"public","tickets","category","character varying","NO",NULL
+"public","tickets","priority","character varying","NO","'MEDIUM'::character varying"
+"public","tickets","description","text","NO",NULL
+"public","tickets","status","character varying","NO","'OPEN'::character varying"
+"public","tickets","resolution_notes","text","YES",NULL
+"public","tickets","verified_by","uuid","YES",NULL
+"public","tickets","verified_at","timestamp with time zone","YES",NULL
+"public","tickets","created_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","tickets","updated_at","timestamp with time zone","YES","CURRENT_TIMESTAMP"
+"public","user_credentials","id","uuid","NO","uuid_generate_v4()"
+"public","user_credentials","user_id","uuid","YES",NULL
+"public","user_credentials","provider","character varying","YES","'local'::character varying"
+"public","user_credentials","password_hash","character varying","NO",NULL
+"public","user_credentials","provider_user_id","character varying","YES",NULL
+"public","user_credentials","cred_created_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","user_credentials","cred_updated_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","user_roles","user_id","uuid","NO",NULL
+"public","user_roles","role_id","uuid","NO",NULL
+"public","user_roles","assigned_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","user_roles","assigned_by","uuid","YES",NULL
+"public","user_sessions","id","uuid","NO","uuid_generate_v4()"
+"public","user_sessions","user_id","uuid","YES",NULL
+"public","user_sessions","token_hash","character varying","NO",NULL
+"public","user_sessions","expires_at","timestamp without time zone","NO",NULL
+"public","user_sessions","token_created_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","user_sessions","last_activity_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","user_sessions","revoked_at","timestamp without time zone","YES",NULL
+"public","users","id","uuid","NO","uuid_generate_v4()"
+"public","users","email","character varying","NO",NULL
+"public","users","acc_status","character varying","YES","'Active'::character varying"
+"public","users","email_verified_at","timestamp without time zone","YES",NULL
+"public","users","last_login_at","timestamp without time zone","YES",NULL
+"public","users","created_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","users","updated_at","timestamp without time zone","YES","CURRENT_TIMESTAMP"
+"public","users","organization_id","uuid","YES",NULL
+"public","users","full_name","character varying","YES",NULL
+"public","users","phone_number","character varying","YES",NULL

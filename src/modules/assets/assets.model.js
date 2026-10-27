@@ -183,3 +183,16 @@ export const getCaptureById = async (captureId) => {
   const { rows } = await pool.query(query, [captureId]);
   return rows[0];
 };
+
+// 11. Fetch the latest unresolved ticket for the Digital Twin "Active Issue" sidebar
+export const getActiveTicketForAsset = async (assetId) => {
+  const query = `
+    SELECT id, ticket_number, category, priority, description, status, created_at
+    FROM tickets
+    WHERE asset_id = $1 AND status NOT IN ('APPROVED', 'CANCELLED')
+    ORDER BY created_at DESC
+    LIMIT 1;
+  `;
+  const { rows } = await pool.query(query, [assetId]);
+  return rows[0] || null;
+};
