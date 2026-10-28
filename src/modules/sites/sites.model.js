@@ -2,7 +2,7 @@ import { pool } from '../../config/db.js';
 
 export const getAllRegions = async () => {
   const query = `
-    SELECT id, name, center_lat, center_lng 
+    SELECT id, name, center_lat, center_lng, boundary_geojson 
     FROM regions 
     ORDER BY name ASC;
   `;
