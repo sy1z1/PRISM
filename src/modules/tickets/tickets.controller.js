@@ -22,7 +22,8 @@ import {
   sendAuthorizationError
 } from '../authorization/resource-access.js';
 import { getSupervisorGroupIds, getTicketMeta } from '../authorization/authorization.model.js';
-import { isManagementUser } from '../authorization/policy.js';
+import { getOrganizationScope, isManagementUser } from '../authorization/policy.js';
+import { cleanupUpload } from '../../middlewares/upload.guard.js';
 
 const ERROR_STATUS = {
   TICKET_NOT_FOUND: 404,
@@ -57,6 +58,7 @@ export const createTicket = async (req, res) => {
     const reportedBy = req.user.userId;
 
     if (!assetId || !groupId || !category || !description) {
+      await cleanupUpload(req);
       return res.status(400).json({
         error: 'assetId, groupId, category, and description are required.'
       });
@@ -82,6 +84,7 @@ export const createTicket = async (req, res) => {
       ...result
     });
   } catch (error) {
+    await cleanupUpload(req);
     respondError(res, error, 'Error creating ticket');
   }
 };
@@ -102,10 +105,9 @@ export const getTicket = async (req, res) => {
 export const listAssetTickets = async (req, res) => {
   try {
     const { assetId } = req.params;
-    await assertAssetAccess(req.user, assetId);
-
+    const asset = await assertAssetAccess(req.user, assetId);
     const groupFilter = await getReadableGroupFilter(req.user);
-    const tickets = await fetchAssetTickets(assetId, groupFilter);
+    const tickets = await fetchAssetTickets(assetId, groupFilter, asset.organization_id);
     res.status(200).json({ count: tickets.length, tickets });
   } catch (error) {
     respondError(res, error, 'Error fetching asset tickets');
@@ -187,16 +189,25 @@ export const startTicketWorkHandler = async (req, res) => {
 export const resolveTicket = async (req, res) => {
   try {
     const meta = await assertSupervisesTicketGroupById(req, res);
-    if (!meta) return;
+    if (!meta) {
+      await cleanupUpload(req);
+      return;
+    }
+
+    // D3: AFTER evidence is mandatory on completion.
+    if (!req.file) {
+      return res.status(400).json({ error: 'AFTER_EVIDENCE_REQUIRED' });
+    }
 
     const { resolutionNotes } = req.body || {};
     if (!resolutionNotes) {
+      await cleanupUpload(req);
       return res.status(400).json({
         error: 'resolutionNotes are required when submitting for verification.'
       });
     }
 
-    const afterMediaUrl = req.file ? `/uploads/tickets/${req.file.filename}` : null;
+    const afterMediaUrl = `/uploads/tickets/${req.file.filename}`;
 
     const result = await completeTicket({
       ticketId: req.params.ticketId,
@@ -210,6 +221,7 @@ export const resolveTicket = async (req, res) => {
       ...result
     });
   } catch (error) {
+    await cleanupUpload(req);
     respondError(res, error, 'Error resolving ticket');
   }
 };
@@ -293,17 +305,33 @@ export const reopenTicketHandler = async (req, res) => {
   }
 };
 
-// 12. GET /api/tickets/queue — supervisor queue scoped by supervised groups.
+// 12. GET /api/tickets/queue
+// Supervisors: scoped to supervised groups. Management: organization-scoped.
+// SuperAdmin: all organizations.
 export const getTicketQueue = async (req, res) => {
   try {
-    const groupIds = await getSupervisorGroupIds(req.user.userId);
-    if (!groupIds.length) {
-      return res.status(403).json({ error: 'NO_SUPERVISED_GROUPS' });
+    const { status, siteId, priority, q, page, limit } = req.query;
+    const management = isManagementUser(req.user);
+
+    let groupIds = null;
+    let organizationId;
+
+    if (management) {
+      organizationId = getOrganizationScope(req.user);
+      if (organizationId === undefined) {
+        return res.status(403).json({ error: 'NO_ORGANIZATION_SCOPE' });
+      }
+    } else {
+      groupIds = await getSupervisorGroupIds(req.user.userId);
+      if (!groupIds.length) {
+        return res.status(403).json({ error: 'NO_SUPERVISED_GROUPS' });
+      }
     }
 
-    const { status, siteId, priority, q, page, limit } = req.query;
     const result = await fetchTicketQueue({
       groupIds,
+      organizationId,
+      requireActiveGroupLink: !management,
       status: status || null,
       siteId: siteId || null,
       priority: priority || null,
@@ -314,7 +342,7 @@ export const getTicketQueue = async (req, res) => {
 
     res.status(200).json({
       ...result,
-      isManagement: isManagementUser(req.user)
+      isManagement: management
     });
   } catch (error) {
     respondError(res, error, 'Error fetching ticket queue');

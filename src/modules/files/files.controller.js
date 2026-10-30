@@ -1,10 +1,8 @@
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
+import { UPLOADS_ROOT } from '../../config/paths.js';
 import { assertFileAccess, sendAuthorizationError } from '../authorization/resource-access.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_ROOT = path.resolve(__dirname, '../../../uploads');
 const SAFE_FILENAME = /^[A-Za-z0-9._-]+$/;
 
 const serveFile = async (req, res, { kind, relativePath, storedUrl }) => {
@@ -24,6 +22,11 @@ const serveFile = async (req, res, { kind, relativePath, storedUrl }) => {
   if (!fs.existsSync(absolutePath)) {
     return res.status(404).json({ error: 'File not found.' });
   }
+
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+  res.setHeader('Content-Disposition', `inline; filename="${fileName.replace(/"/g, '')}"`);
 
   return res.sendFile(absolutePath);
 };

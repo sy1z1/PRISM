@@ -8,7 +8,7 @@ import {
 } from './assets.controller.js';
 import { requireAuth } from '../../middlewares/auth.guard.js';
 import { requireRole } from '../../middlewares/rbac.guard.js';
-import { upload } from '../../middlewares/upload.guard.js';
+import { upload, validateUploadedImage } from '../../middlewares/upload.guard.js';
 import { TWIN_EDITOR_ROLES } from '../authorization/policy.js';
 
 const router = Router();
@@ -22,6 +22,7 @@ router.post(
   requireAuth,
   requireRole(TWIN_EDITOR_ROLES),
   upload.single('image360'),
+  validateUploadedImage,
   upload360Capture
 );
 

@@ -93,12 +93,13 @@ export const evaluateSession = (session, now = new Date()) => {
 
 export const isSelfVerification = (
   actorId,
-  { reportedBy, assigneeIds, acknowledgedBy, completedBy, verifiedBy, verifiedByIds } = {}
+  { reportedBy, assigneeIds, acknowledgedBy, completedBy, verifiedBy, verifiedByIds } = {},
+  { ignoreReportedBy = false } = {}
 ) => {
   const actor = normalizeText(actorId);
   if (!actor) return false;
   const involved = [
-    reportedBy,
+    ...(ignoreReportedBy ? [] : [reportedBy]),
     acknowledgedBy,
     completedBy,
     verifiedBy,
@@ -107,6 +108,28 @@ export const isSelfVerification = (
   ].map(normalizeText);
   return involved.includes(actor);
 };
+
+// Management may verify a ticket they reported, but remains blocked if they
+// performed contractor work (assignee/acknowledger/completer) or previously
+// verified it. Supervisors never get the reporter exemption.
+export const selfVerificationViolation = (
+  user,
+  ticketMeta = {},
+  assigneeIds = [],
+  priorVerifierIds = []
+) =>
+  isSelfVerification(
+    user?.userId,
+    {
+      reportedBy: ticketMeta.reported_by,
+      acknowledgedBy: ticketMeta.acknowledged_by,
+      completedBy: ticketMeta.completed_by,
+      verifiedBy: ticketMeta.verified_by,
+      assigneeIds,
+      verifiedByIds: priorVerifierIds
+    },
+    { ignoreReportedBy: isManagementUser(user) }
+  );
 
 export const toActor = (session) => {
   const roles = getUserRoles({ roles: session.roles });

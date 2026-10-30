@@ -3,8 +3,8 @@ import {
   canAccessOrganization,
   canReadTicket,
   isManagementUser,
-  isSelfVerification,
-  isSuperAdmin
+  isSuperAdmin,
+  selfVerificationViolation
 } from './policy.js';
 
 export class AuthorizationError extends Error {
@@ -84,6 +84,16 @@ export const assertSupervisesTicketGroup = async (user, ticketMeta) => {
   if (!isSupervisor) {
     throw new AuthorizationError('NOT_GROUP_SUPERVISOR');
   }
+
+  // D1: the ticket's organization must have an ACTIVE link to the group.
+  const linked = await authzModel.isSupervisorLinkedToTicketOrg(
+    user.userId,
+    ticketMeta.maintenance_group_id,
+    ticketMeta.organization_id
+  );
+  if (!linked) {
+    throw new AuthorizationError('NOT_GROUP_SUPERVISOR');
+  }
 };
 
 export const assertTicketReadAccess = async (user, ticketMeta) => {
@@ -97,6 +107,15 @@ export const assertTicketReadAccess = async (user, ticketMeta) => {
     organizationId: ticketMeta.organization_id,
     maintenanceGroupId: ticketMeta.maintenance_group_id
   }, groupIds)) {
+    throw new AuthorizationError('TICKET_ACCESS_DENIED');
+  }
+
+  const linked = await authzModel.isSupervisorLinkedToTicketOrg(
+    user.userId,
+    ticketMeta.maintenance_group_id,
+    ticketMeta.organization_id
+  );
+  if (!linked) {
     throw new AuthorizationError('TICKET_ACCESS_DENIED');
   }
 };
@@ -120,14 +139,7 @@ export const assertNotSelfVerification = async (user, ticketMeta) => {
     authzModel.getAssigneeIds(ticketMeta.id),
     authzModel.getPriorVerifierIds(ticketMeta.id)
   ]);
-  if (isSelfVerification(user.userId, {
-    reportedBy: ticketMeta.reported_by,
-    assigneeIds,
-    acknowledgedBy: ticketMeta.acknowledged_by,
-    completedBy: ticketMeta.completed_by,
-    verifiedBy: ticketMeta.verified_by,
-    verifiedByIds: priorVerifierIds
-  })) {
+  if (selfVerificationViolation(user, ticketMeta, assigneeIds, priorVerifierIds)) {
     throw new AuthorizationError('SELF_VERIFICATION_FORBIDDEN');
   }
 };
@@ -144,12 +156,21 @@ export const assertFileAccess = async (user, kind, identifier) => {
   if (!row) throw new AuthorizationError('RESOURCE_NOT_FOUND', 404);
 
   if (kind === 'ticket' && !isManagementUser(user)) {
-    // Non-management users may only read evidence for tickets they supervise.
+    // Non-management users may only read evidence for tickets they supervise
+    // and whose organization has an ACTIVE link to the group.
     const isSupervisor = await authzModel.isActiveSupervisorOfGroup(
       user.userId,
       row.maintenance_group_id
     );
     if (!isSupervisor) throw new AuthorizationError('ORGANIZATION_ACCESS_DENIED');
+
+    const linked = await authzModel.isSupervisorLinkedToTicketOrg(
+      user.userId,
+      row.maintenance_group_id,
+      row.organization_id
+    );
+    if (!linked) throw new AuthorizationError('ORGANIZATION_ACCESS_DENIED');
+
     return row;
   }
 

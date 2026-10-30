@@ -1,5 +1,7 @@
 import * as assetsService from './assets.service.js';
 import * as assetsModel from './assets.model.js';
+import { cleanupUpload } from '../../middlewares/upload.guard.js';
+import { recordAuditEvent } from '../audit/audit.model.js';
 import {
   assertAssetAccess,
   assertCaptureAccess,
@@ -42,17 +44,28 @@ export const upload360Capture = async (req, res) => {
 
     const asset = await assetsModel.getAssetWithSiteDetails(assetId);
     if (!asset) {
+      await cleanupUpload(req);
       return res.status(404).json({ error: 'Asset not found.' });
     }
 
     const local360Url = `/uploads/assets/360/${req.file.filename}`;
     const newCapture = await assetsModel.createAssetCapture(assetId, local360Url, userId, capturedAt);
 
+    await recordAuditEvent({
+      actorId: userId,
+      organizationId: req.user.organizationId ?? null,
+      actionType: 'ASSET_CAPTURE_UPLOADED',
+      resourceType: 'asset_capture',
+      resourceId: newCapture?.id ?? null,
+      metadata: { assetId, url: local360Url }
+    });
+
     res.status(201).json({
       message: '360° capture uploaded successfully!',
       capture: newCapture
     });
   } catch (error) {
+    await cleanupUpload(req);
     if (sendAuthorizationError(res, error)) return;
     console.error('Error uploading 360 capture:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -88,6 +101,15 @@ export const saveHotspot = async (req, res) => {
       pitch: numPitch,
       yaw: numYaw,
       userId
+    });
+
+    await recordAuditEvent({
+      actorId: userId,
+      organizationId: req.user.organizationId ?? null,
+      actionType: 'ASSET_HOTSPOT_SAVED',
+      resourceType: 'capture_hotspot',
+      resourceId: hotspot?.id ?? null,
+      metadata: { captureId, targetAssetId, pitch: numPitch, yaw: numYaw }
     });
 
     res.status(200).json({
@@ -126,6 +148,15 @@ export const deleteHotspot = async (req, res) => {
       return res.status(404).json({ error: 'Hotspot not found.' });
     }
 
+    await recordAuditEvent({
+      actorId: req.user.userId,
+      organizationId: req.user.organizationId ?? null,
+      actionType: 'ASSET_HOTSPOT_DELETED',
+      resourceType: 'capture_hotspot',
+      resourceId: hotspotId,
+      metadata: {}
+    });
+
     res.status(200).json({ message: 'Hotspot removed successfully.' });
   } catch (error) {
     if (sendAuthorizationError(res, error)) return;
@@ -142,12 +173,21 @@ export const toggleIgnoreWarning = async (req, res) => {
 
     await assertCaptureAccess(req.user, captureId);
 
-    const ignoreBool = ignore !== undefined ? Boolean(ignore) : true;
+    const ignoreBool = typeof ignore === 'boolean' ? ignore : true;
     const updated = await assetsModel.setCaptureWarningIgnore(captureId, ignoreBool);
 
     if (!updated) {
       return res.status(404).json({ error: 'Capture not found.' });
     }
+
+    await recordAuditEvent({
+      actorId: req.user.userId,
+      organizationId: req.user.organizationId ?? null,
+      actionType: ignoreBool ? 'ASSET_WARNING_IGNORED' : 'ASSET_WARNING_RESTORED',
+      resourceType: 'asset_capture',
+      resourceId: captureId,
+      metadata: { ignore: ignoreBool }
+    });
 
     res.status(200).json({
       message: ignoreBool

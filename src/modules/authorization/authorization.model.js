@@ -143,6 +143,25 @@ export const isActiveSupervisorOfGroup = async (userId, groupId) => {
   return rows.length > 0;
 };
 
+// D1: a supervisor may serve multiple organizations. Access to a ticket also
+// requires the ticket's organization to have an ACTIVE link to the group.
+export const isSupervisorLinkedToTicketOrg = async (userId, groupId, organizationId) => {
+  if (!userId || !groupId || !organizationId) return false;
+  const query = `
+    SELECT 1
+    FROM maintenance_group_supervisors s
+    JOIN organization_maintenance_groups omg ON omg.group_id = s.group_id
+    WHERE s.user_id = $1
+      AND s.group_id = $2
+      AND s.revoked_at IS NULL
+      AND omg.organization_id = $3
+      AND omg.status = 'ACTIVE'
+    LIMIT 1;
+  `;
+  const { rows } = await pool.query(query, [userId, groupId, organizationId]);
+  return rows.length > 0;
+};
+
 export const getSupervisorGroupIds = async (userId) => {
   if (!userId) return [];
   const query = `

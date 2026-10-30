@@ -1,11 +1,15 @@
 import * as sitesService from './sites.service.js';
 import { pool } from '../../config/db.js';
+import { UPLOADS_ROOT } from '../../config/paths.js';
+import { cleanupUpload } from '../../middlewares/upload.guard.js';
+import { recordAuditEvent } from '../audit/audit.model.js';
 import fs from 'fs';
 import path from 'path';
 import { getOrganizationScope } from '../authorization/policy.js';
 import {
   AuthorizationError,
   assertAssetAccess,
+  assertSiteAccess,
   sendAuthorizationError
 } from '../authorization/resource-access.js';
 
@@ -64,15 +68,19 @@ export const getMicroData = async (req, res) => {
     const { denied, scope } = resolveScope(res, req.user);
     if (denied) return;
 
+    await assertSiteAccess(req.user, siteId);
+
     const microData = await sitesService.fetchMicroMapData(siteId, scope);
     res.status(200).json(microData);
   } catch (error) {
+    if (sendAuthorizationError(res, error)) return;
     console.error('Error fetching micro map data:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
 
 export const uploadThumbnail = async (req, res) => {
+  let fileCommitted = false;
   try {
     const { assetId } = req.params;
 
@@ -100,22 +108,36 @@ export const uploadThumbnail = async (req, res) => {
     const { rows } = await pool.query(updateQuery, [localFileUrl, assetId]);
 
     if (rows.length === 0) {
+      await cleanupUpload(req);
       return res.status(404).json({ error: 'Asset not found' });
     }
 
-    // 3. The Garbage Collector: Delete the OLD image from the hard drive
+    fileCommitted = true;
+
+    await recordAuditEvent({
+      actorId: req.user.userId,
+      organizationId: req.user.organizationId ?? null,
+      actionType: 'ASSET_THUMBNAIL_UPLOADED',
+      resourceType: 'asset',
+      resourceId: assetId,
+      metadata: { url: localFileUrl, previousUrl: oldImageUrl ?? null }
+    });
+
+    // 3. The Garbage Collector: Delete the OLD image from the hard drive.
     if (oldImageUrl) {
-      // Convert the URL (e.g., /uploads/...) into a real folder path on your computer
-      const oldFilePath = path.join(process.cwd(), oldImageUrl);
-      
-      fs.unlink(oldFilePath, (err) => {
-        if (err) {
-          // We just log the error, we don't crash the API if the old file is missing
-          console.error(`Could not delete old image at ${oldFilePath}:`, err.message);
-        } else {
-          console.log(`Successfully deleted orphaned image: ${oldImageUrl}`);
-        }
-      });
+      const oldRelative = String(oldImageUrl).replace(/^\/uploads\//, '');
+      const oldFilePath = path.resolve(UPLOADS_ROOT, oldRelative);
+
+      if (oldFilePath.startsWith(UPLOADS_ROOT + path.sep)) {
+        fs.unlink(oldFilePath, (err) => {
+          if (err) {
+            // We just log the error, we don't crash the API if the old file is missing
+            console.error(`Could not delete old image at ${oldFilePath}:`, err.message);
+          } else {
+            console.log(`Successfully deleted orphaned image: ${oldImageUrl}`);
+          }
+        });
+      }
     }
 
     res.status(200).json({
@@ -124,6 +146,7 @@ export const uploadThumbnail = async (req, res) => {
     });
 
   } catch (error) {
+    if (!fileCommitted) await cleanupUpload(req);
     if (sendAuthorizationError(res, error)) return;
     console.error('Upload error:', error);
     res.status(500).json({ error: 'Internal server error' });

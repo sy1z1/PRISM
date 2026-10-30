@@ -106,6 +106,9 @@ export const createAssetCapture = async (assetId, image360Url, userId, capturedA
   try {
     await client.query('BEGIN');
 
+    // Serialize capture uploads for the same asset so one_latest stays unique.
+    await client.query('SELECT 1 FROM assets WHERE id = $1 FOR UPDATE;', [assetId]);
+
     await client.query(
       `UPDATE asset_captures SET is_latest = FALSE WHERE asset_id = $1;`,
       [assetId]

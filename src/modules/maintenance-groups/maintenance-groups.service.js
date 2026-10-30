@@ -19,3 +19,18 @@ export const revokeSupervisor = async ({ groupId, userId, revokedBy }) => {
   if (!revoked) throw new Error('SUPERVISOR_NOT_FOUND');
   return revoked;
 };
+
+export const fetchLinkedGroups = async (organizationId) => {
+  return await model.getLinkedGroups(organizationId);
+};
+
+export const linkGroup = async ({ organizationId, groupCode, status }) => {
+  if (!groupCode) throw new Error('GROUP_CODE_REQUIRED');
+  return await model.linkGroupByCode({ organizationId, groupCode, status });
+};
+
+export const setGroupLinkStatus = async ({ organizationId, groupId, status }) => {
+  const updated = await model.updateGroupLinkStatus({ organizationId, groupId, status });
+  if (!updated) throw new Error('GROUP_LINK_NOT_FOUND');
+  return updated;
+};

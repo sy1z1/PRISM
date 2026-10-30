@@ -93,3 +93,69 @@ export const revokeGroupSupervisor = async ({ groupId, userId, revokedBy }) => {
   );
   return rows[0] || null;
 };
+
+// D7: management links a contractor group by its unique group_code and toggles
+// the link status for its own organization.
+export const getLinkedGroups = async (organizationId) => {
+  const { rows } = await pool.query(
+    `SELECT
+       omg.id AS link_id,
+       omg.status,
+       mg.id AS group_id,
+       mg.name,
+       mg.group_code,
+       mg.group_type,
+       mg.specialty_category,
+       mg.contact_email,
+       mg.contact_phone
+     FROM organization_maintenance_groups omg
+     JOIN maintenance_groups mg ON mg.id = omg.group_id
+     WHERE omg.organization_id = $1
+     ORDER BY mg.name ASC;`,
+    [organizationId]
+  );
+  return rows;
+};
+
+export const linkGroupByCode = async ({ organizationId, groupCode, status }) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: groupRows } = await client.query(
+      `SELECT id, name, group_code, group_type, specialty_category
+       FROM maintenance_groups
+       WHERE LOWER(group_code) = LOWER($1);`,
+      [groupCode]
+    );
+    if (!groupRows[0]) throw new Error('GROUP_NOT_FOUND');
+
+    const { rows } = await client.query(
+      `INSERT INTO organization_maintenance_groups (organization_id, group_id, status)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (organization_id, group_id)
+       DO UPDATE SET status = EXCLUDED.status
+       RETURNING *;`,
+      [organizationId, groupRows[0].id, status]
+    );
+
+    await client.query('COMMIT');
+    return { ...rows[0], group: groupRows[0] };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+export const updateGroupLinkStatus = async ({ organizationId, groupId, status }) => {
+  const { rows } = await pool.query(
+    `UPDATE organization_maintenance_groups
+     SET status = $3
+     WHERE organization_id = $1 AND group_id = $2
+     RETURNING *;`,
+    [organizationId, groupId, status]
+  );
+  return rows[0] || null;
+};

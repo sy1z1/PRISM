@@ -146,13 +146,23 @@ export const getTicketById = async (ticketId) => {
       s.name AS site_name,
       s.site_code,
       r.organization_id,
+      o.name AS organization_name,
       mg.name AS maintenance_group_name,
-      mg.group_code AS maintenance_group_code
+      mg.group_code AS maintenance_group_code,
+      ru.email AS reported_by_email,
+      au.email AS acknowledged_by_email,
+      cu.email AS completed_by_email,
+      vu.email AS verified_by_email
     FROM tickets t
     JOIN assets a ON t.asset_id = a.id
     LEFT JOIN sites s ON a.site_id = s.id
     LEFT JOIN regions r ON s.region_id = r.id
+    LEFT JOIN organizations o ON o.id = r.organization_id
     LEFT JOIN maintenance_groups mg ON t.maintenance_group_id = mg.id
+    LEFT JOIN users ru ON ru.id = t.reported_by
+    LEFT JOIN users au ON au.id = t.acknowledged_by
+    LEFT JOIN users cu ON cu.id = t.completed_by
+    LEFT JOIN users vu ON vu.id = t.verified_by
     WHERE t.id = $1;
   `;
   const { rows: ticketRows } = await pool.query(ticketQuery, [ticketId]);
@@ -168,17 +178,21 @@ export const getTicketById = async (ticketId) => {
     SELECT
       ta.id, ta.ticket_id, ta.assigned_by, ta.status,
       ta.assigned_at, ta.started_at, ta.completed_at, ta.group_id,
-      mg.name AS group_name, mg.group_code, mg.contact_phone AS group_phone
+      mg.name AS group_name, mg.group_code, mg.contact_phone AS group_phone,
+      u.email AS assigned_by_email
     FROM ticket_assignments ta
     LEFT JOIN maintenance_groups mg ON ta.group_id = mg.id
+    LEFT JOIN users u ON u.id = ta.assigned_by
     WHERE ta.ticket_id = $1
     ORDER BY ta.assigned_at DESC;
   `;
 
   const auditQuery = `
-    SELECT * FROM ticket_audit_logs
-    WHERE ticket_id = $1
-    ORDER BY logged_at ASC;
+    SELECT a.*, u.email AS actor_email
+    FROM ticket_audit_logs a
+    LEFT JOIN users u ON u.id = a.actor_id
+    WHERE a.ticket_id = $1
+    ORDER BY a.logged_at ASC;
   `;
 
   const [mediaRes, assignRes, auditRes] = await Promise.all([
@@ -196,12 +210,21 @@ export const getTicketById = async (ticketId) => {
 };
 
 // 3. Tickets for an asset, optionally restricted to supervised groups.
-export const getTicketsByAssetId = async (assetId, groupIds = null) => {
+export const getTicketsByAssetId = async (assetId, groupIds = null, organizationId = null) => {
   const params = [assetId];
   let restriction = '';
   if (Array.isArray(groupIds)) {
     params.push(groupIds);
-    restriction = `AND t.maintenance_group_id = ANY($2::uuid[])`;
+    restriction = `AND t.maintenance_group_id = ANY($${params.length}::uuid[])`;
+    if (organizationId) {
+      params.push(organizationId);
+      restriction += ` AND EXISTS (
+        SELECT 1 FROM organization_maintenance_groups omg
+        WHERE omg.group_id = t.maintenance_group_id
+          AND omg.organization_id = $${params.length}
+          AND omg.status = 'ACTIVE'
+      )`;
+    }
   }
   const query = `
     SELECT t.*, mg.name AS maintenance_group_name, mg.group_code AS maintenance_group_code
@@ -605,9 +628,12 @@ export const reopenTicketTransaction = async ({ ticketId, reopenedBy, groupId, r
   }
 };
 
-// 12. Supervisor queue, scoped to the caller's supervised groups.
+// 12. Ticket queue. Supervisor: scoped to supervised groups. Management:
+// scoped to the caller's organization (SuperAdmin: all organizations).
 export const listTicketQueue = async ({
-  groupIds,
+  groupIds = null,
+  organizationId = undefined,
+  requireActiveGroupLink = false,
   status = null,
   siteId = null,
   priority = null,
@@ -619,36 +645,55 @@ export const listTicketQueue = async ({
   const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
   const offset = (safePage - 1) * safeLimit;
 
-  const params = [groupIds];
-  const conditions = [`t.maintenance_group_id = ANY($1::uuid[])`];
+  const params = [];
+  const conditions = [];
 
+  if (Array.isArray(groupIds) && groupIds.length > 0) {
+    params.push(groupIds);
+    conditions.push(`t.maintenance_group_id = ANY($${params.length}::uuid[])`);
+  }
+  if (requireActiveGroupLink) {
+    conditions.push(`EXISTS (
+      SELECT 1 FROM organization_maintenance_groups omg
+      WHERE omg.group_id = t.maintenance_group_id
+        AND omg.organization_id = r.organization_id
+        AND omg.status = 'ACTIVE'
+    )`);
+  }
+  if (organizationId !== undefined && organizationId !== null) {
+    params.push(organizationId);
+    conditions.push(`r.organization_id = $${params.length}`);
+  }
   if (status) {
-    params.push(status);
+    params.push(String(status));
     conditions.push(`t.status = $${params.length}`);
   }
   if (siteId) {
-    params.push(siteId);
+    params.push(String(siteId));
     conditions.push(`a.site_id = $${params.length}`);
   }
   if (priority) {
-    params.push(priority.toUpperCase());
+    params.push(String(priority).toUpperCase());
     conditions.push(`t.priority = $${params.length}`);
   }
   if (search) {
-    params.push(`%${search}%`);
+    params.push(`%${String(search)}%`);
     conditions.push(
       `(t.ticket_number ILIKE $${params.length} OR a.name_identifier ILIKE $${params.length} OR t.description ILIKE $${params.length})`
     );
   }
 
-  const where = conditions.join(' AND ');
-
-  const countQuery = `
-    SELECT count(*)::int AS total
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const joins = `
     FROM tickets t
     JOIN assets a ON t.asset_id = a.id
-    WHERE ${where};
+    LEFT JOIN sites s ON a.site_id = s.id
+    LEFT JOIN regions r ON s.region_id = r.id
+    LEFT JOIN organizations o ON o.id = r.organization_id
+    LEFT JOIN maintenance_groups mg ON t.maintenance_group_id = mg.id
   `;
+
+  const countQuery = `SELECT count(*)::int AS total ${joins} ${where};`;
   const { rows: countRows } = await pool.query(countQuery, params);
   const total = countRows[0]?.total || 0;
 
@@ -660,13 +705,11 @@ export const listTicketQueue = async ({
       t.acknowledged_at, t.completed_at,
       a.name_identifier AS asset_name,
       s.name AS site_name, s.site_code,
+      r.organization_id, o.name AS organization_name,
       mg.name AS maintenance_group_name, mg.group_code AS maintenance_group_code
-    FROM tickets t
-    JOIN assets a ON t.asset_id = a.id
-    LEFT JOIN sites s ON a.site_id = s.id
-    LEFT JOIN maintenance_groups mg ON t.maintenance_group_id = mg.id
-    WHERE ${where}
-    ORDER BY t.created_at DESC
+    ${joins}
+    ${where}
+    ORDER BY t.created_at DESC, t.id DESC
     LIMIT $${listParams.length - 1} OFFSET $${listParams.length};
   `;
   const { rows } = await pool.query(listQuery, listParams);

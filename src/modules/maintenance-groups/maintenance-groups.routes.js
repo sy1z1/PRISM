@@ -3,7 +3,10 @@ import {
   getAvailableGroups,
   listSupervisors,
   addSupervisor,
-  removeSupervisor
+  removeSupervisor,
+  getLinkedGroups,
+  linkGroup,
+  updateGroupLink
 } from './maintenance-groups.controller.js';
 import { requireAuth } from '../../middlewares/auth.guard.js';
 import { requireRole } from '../../middlewares/rbac.guard.js';
@@ -13,6 +16,11 @@ const router = Router();
 
 // Management uses this to populate the group selector before creating a ticket.
 router.get('/available', requireAuth, requireRole(MANAGEMENT_ROLES), getAvailableGroups);
+
+// D7: contractor handshake by group_code + ACTIVE/INACTIVE toggle.
+router.get('/linked', requireAuth, requireRole(MANAGEMENT_ROLES), getLinkedGroups);
+router.post('/link', requireAuth, requireRole(MANAGEMENT_ROLES), linkGroup);
+router.patch('/:groupId/link', requireAuth, requireRole(MANAGEMENT_ROLES), updateGroupLink);
 
 // Supervisor authority administration is SuperAdmin-only.
 router.get(

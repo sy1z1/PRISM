@@ -17,8 +17,8 @@ export const fetchTicketDetails = async (ticketId) => {
   return ticket;
 };
 
-export const fetchAssetTickets = async (assetId, groupIds = null) => {
-  return await ticketsModel.getTicketsByAssetId(assetId, groupIds);
+export const fetchAssetTickets = async (assetId, groupIds = null, organizationId = null) => {
+  return await ticketsModel.getTicketsByAssetId(assetId, groupIds, organizationId);
 };
 
 export const fetchDispatchOptions = async (ticketId) => {

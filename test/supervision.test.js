@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   ROLES,
   canReadTicket,
-  isSelfVerification
+  isSelfVerification,
+  selfVerificationViolation
 } from '../src/modules/authorization/policy.js';
 
 test('management reads only within its own organization', () => {
@@ -45,4 +46,62 @@ test('a distinct verifier is allowed', () => {
     acknowledgedBy: 'supervisor-a',
     completedBy: 'supervisor-b'
   }), false);
+});
+
+test('management may verify a ticket they reported', () => {
+  const councilAdmin = {
+    userId: 'admin-1',
+    role: ROLES.COUNCIL_ADMIN,
+    roles: [ROLES.COUNCIL_ADMIN],
+    organizationId: 'org-a'
+  };
+  const superAdmin = {
+    userId: 'sa-1',
+    role: ROLES.SUPER_ADMIN,
+    roles: [ROLES.SUPER_ADMIN],
+    organizationId: null
+  };
+
+  assert.equal(selfVerificationViolation(councilAdmin, { reported_by: 'admin-1' }), false);
+  assert.equal(selfVerificationViolation(superAdmin, { reported_by: 'sa-1' }), false);
+});
+
+test('management remains blocked when they performed contractor work', () => {
+  const councilAdmin = {
+    userId: 'admin-1',
+    role: ROLES.COUNCIL_ADMIN,
+    roles: [ROLES.COUNCIL_ADMIN],
+    organizationId: 'org-a'
+  };
+
+  assert.equal(
+    selfVerificationViolation(councilAdmin, { reported_by: 'admin-1', completed_by: 'admin-1' }),
+    true
+  );
+  assert.equal(
+    selfVerificationViolation(councilAdmin, { reported_by: 'someone', acknowledged_by: 'admin-1' }),
+    true
+  );
+  assert.equal(
+    selfVerificationViolation(councilAdmin, { reported_by: 'someone' }, ['admin-1']),
+    true
+  );
+});
+
+test('supervisor cannot verify their own repair work', () => {
+  const supervisor = {
+    userId: 'sup-1',
+    role: ROLES.MAINTENANCE_WORKER,
+    roles: [ROLES.MAINTENANCE_WORKER],
+    organizationId: 'org-a'
+  };
+
+  assert.equal(
+    selfVerificationViolation(supervisor, { reported_by: 'sup-1', completed_by: 'sup-1' }),
+    true
+  );
+  assert.equal(
+    selfVerificationViolation(supervisor, { reported_by: 'reporter', completed_by: 'sup-1' }),
+    true
+  );
 });
