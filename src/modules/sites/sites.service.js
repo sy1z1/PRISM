@@ -1,16 +1,16 @@
 import * as sitesModel from './sites.model.js';
 
-export const fetchRegionList = async () => {
-  return await sitesModel.getAllRegions();
+export const fetchRegionList = async (organizationId) => {
+  return await sitesModel.getAllRegions(organizationId);
 };
 
-export const fetchMacroMapData = async (regionName) => {
-  const region = await sitesModel.getRegionByName(regionName);
+export const fetchMacroMapData = async (regionName, organizationId) => {
+  const region = await sitesModel.getRegionByName(regionName, organizationId);
   if (!region) {
     throw new Error('REGION_NOT_FOUND');
   }
 
-  const sites = await sitesModel.getSitesByRegionId(region.id);
+  const sites = await sitesModel.getSitesByRegionId(region.id, organizationId);
 
   return {
     region: {
@@ -35,8 +35,8 @@ export const fetchMacroMapData = async (regionName) => {
   };
 };
 
-export const fetchMicroMapData = async (siteId) => {
-  const assets = await sitesModel.getAssetsBySiteId(siteId);
+export const fetchMicroMapData = async (siteId, organizationId) => {
+  const assets = await sitesModel.getAssetsBySiteId(siteId, organizationId);
 
   return {
     siteId: siteId,

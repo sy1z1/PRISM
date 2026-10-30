@@ -1,8 +1,78 @@
 import { pool } from '../../config/db.js';
+import { TICKET_STATUS, canTransition } from './ticket-transitions.js';
 
-// 1. Create a New Ticket (+ Audit Log + Optional 'BEFORE' Media)
+const assertTransition = (fromStatus, toStatus) => {
+  if (!canTransition(fromStatus, toStatus)) {
+    throw new Error('INVALID_TRANSITION');
+  }
+};
+
+const getAssetOrgForUpdate = async (client, assetId) => {
+  const lock = await client.query(`SELECT id FROM assets WHERE id = $1 FOR UPDATE;`, [assetId]);
+  if (!lock.rows[0]) return null;
+
+  const query = `
+    SELECT a.id, r.organization_id
+    FROM assets a
+    LEFT JOIN sites s ON a.site_id = s.id
+    LEFT JOIN regions r ON s.region_id = r.id
+    WHERE a.id = $1;
+  `;
+  const { rows } = await client.query(query, [assetId]);
+  return rows[0] || null;
+};
+
+const assertActiveGroupContract = async (client, organizationId, groupId) => {
+  if (!organizationId) throw new Error('GROUP_NOT_CONTRACTED');
+  const { rows } = await client.query(
+    `SELECT id FROM organization_maintenance_groups
+     WHERE organization_id = $1 AND group_id = $2 AND status = 'ACTIVE';`,
+    [organizationId, groupId]
+  );
+  if (!rows[0]) throw new Error('GROUP_NOT_CONTRACTED');
+};
+
+const lockTicket = async (client, ticketId) => {
+  const { rows } = await client.query(
+    `SELECT * FROM tickets WHERE id = $1 FOR UPDATE;`,
+    [ticketId]
+  );
+  if (!rows[0]) throw new Error('TICKET_NOT_FOUND');
+  return rows[0];
+};
+
+const lockTicketMeta = async (client, ticketId) => {
+  const lock = await client.query(`SELECT id FROM tickets WHERE id = $1 FOR UPDATE;`, [ticketId]);
+  if (!lock.rows[0]) throw new Error('TICKET_NOT_FOUND');
+
+  const query = `
+    SELECT
+      t.id, t.status, t.category, t.asset_id, t.maintenance_group_id,
+      t.maintenance_group_id AS old_group_id,
+      r.organization_id
+    FROM tickets t
+    JOIN assets a ON t.asset_id = a.id
+    LEFT JOIN sites s ON a.site_id = s.id
+    LEFT JOIN regions r ON s.region_id = r.id
+    WHERE t.id = $1;
+  `;
+  const { rows } = await client.query(query, [ticketId]);
+  if (!rows[0]) throw new Error('TICKET_NOT_FOUND');
+  return rows[0];
+};
+
+const insertAudit = async (client, ticketId, actorId, actionType, oldValue, newValue, notes = null) => {
+  await client.query(
+    `INSERT INTO ticket_audit_logs (ticket_id, actor_id, action_type, old_value, new_value, notes)
+     VALUES ($1, $2, $3, $4, $5, $6);`,
+    [ticketId, actorId, actionType, oldValue, newValue, notes]
+  );
+};
+
+// 1. Create a ticket already assigned to the selected group (atomic).
 export const createTicketTransaction = async ({
   assetId,
+  groupId,
   reportedBy,
   category,
   priority = 'MEDIUM',
@@ -10,32 +80,42 @@ export const createTicketTransaction = async ({
   mediaUrl = null,
   mediaType = 'field_photo'
 }) => {
+  if (!groupId) throw new Error('GROUP_REQUIRED');
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const insertTicketQuery = `
-      INSERT INTO tickets (asset_id, reported_by, category, priority, description, status)
-      VALUES ($1, $2, $3, $4, $5, 'OPEN')
-      RETURNING *;
-    `;
-    const { rows: ticketRows } = await client.query(insertTicketQuery, [
-      assetId,
-      reportedBy,
-      category,
-      priority.toUpperCase(),
-      description
-    ]);
+    const asset = await getAssetOrgForUpdate(client, assetId);
+    if (!asset) throw new Error('ASSET_NOT_FOUND');
+
+    await assertActiveGroupContract(client, asset.organization_id, groupId);
+
+    const { rows: ticketRows } = await client.query(
+      `INSERT INTO tickets
+         (asset_id, reported_by, category, priority, description, status, maintenance_group_id)
+       VALUES ($1, $2, $3, $4, $5, 'ASSIGNED', $6)
+       RETURNING *;`,
+      [assetId, reportedBy, category, priority.toUpperCase(), description, groupId]
+    );
     const ticket = ticketRows[0];
 
-    // Record Audit Log
     await client.query(
-      `INSERT INTO ticket_audit_logs (ticket_id, actor_id, action_type, old_value, new_value)
-       VALUES ($1, $2, 'TICKET_CREATED', NULL, 'OPEN');`,
-      [ticket.id, reportedBy]
+      `INSERT INTO ticket_assignments (ticket_id, group_id, assignee_id, assigned_by, status)
+       VALUES ($1, $2, NULL, $3, 'DISPATCHED');`,
+      [ticket.id, groupId, reportedBy]
     );
 
-    // Optional: Attach 'BEFORE' photo if uploaded with the report
+    await insertAudit(client, ticket.id, reportedBy, 'TICKET_CREATED', null, TICKET_STATUS.ASSIGNED);
+    await insertAudit(
+      client,
+      ticket.id,
+      reportedBy,
+      'ASSIGNED_TO_GROUP',
+      null,
+      String(groupId)
+    );
+
     let media = null;
     if (mediaUrl) {
       const { rows: mediaRows } = await client.query(
@@ -57,49 +137,47 @@ export const createTicketTransaction = async ({
   }
 };
 
-// 2. Get Full Ticket Details (Ticket + Media + Group/Worker Assignments + Audit Trail)
+// 2. Full ticket detail.
 export const getTicketById = async (ticketId) => {
   const ticketQuery = `
-    SELECT 
+    SELECT
       t.*,
       a.name_identifier AS asset_name,
       s.name AS site_name,
       s.site_code,
-      r.organization_id
+      r.organization_id,
+      mg.name AS maintenance_group_name,
+      mg.group_code AS maintenance_group_code
     FROM tickets t
     JOIN assets a ON t.asset_id = a.id
-    JOIN sites s ON a.site_id = s.id
-    JOIN regions r ON s.region_id = r.id
+    LEFT JOIN sites s ON a.site_id = s.id
+    LEFT JOIN regions r ON s.region_id = r.id
+    LEFT JOIN maintenance_groups mg ON t.maintenance_group_id = mg.id
     WHERE t.id = $1;
   `;
   const { rows: ticketRows } = await pool.query(ticketQuery, [ticketId]);
   if (!ticketRows[0]) return null;
 
   const mediaQuery = `
-    SELECT * FROM ticket_media 
-    WHERE ticket_id = $1 
+    SELECT * FROM ticket_media
+    WHERE ticket_id = $1
     ORDER BY created_at ASC;
   `;
 
   const assignQuery = `
-    SELECT 
-      ta.*,
-      mg.name AS group_name,
-      mg.group_code,
-      mg.contact_phone AS group_phone,
-      u.full_name AS assignee_name,
-      u.email AS assignee_email,
-      u.phone_number AS assignee_phone
+    SELECT
+      ta.id, ta.ticket_id, ta.assigned_by, ta.status,
+      ta.assigned_at, ta.started_at, ta.completed_at, ta.group_id,
+      mg.name AS group_name, mg.group_code, mg.contact_phone AS group_phone
     FROM ticket_assignments ta
     LEFT JOIN maintenance_groups mg ON ta.group_id = mg.id
-    LEFT JOIN users u ON ta.assignee_id = u.id
     WHERE ta.ticket_id = $1
     ORDER BY ta.assigned_at DESC;
   `;
 
   const auditQuery = `
-    SELECT * FROM ticket_audit_logs 
-    WHERE ticket_id = $1 
+    SELECT * FROM ticket_audit_logs
+    WHERE ticket_id = $1
     ORDER BY logged_at ASC;
   `;
 
@@ -117,79 +195,63 @@ export const getTicketById = async (ticketId) => {
   };
 };
 
-// 3. Get All Tickets for a Specific Asset
-export const getTicketsByAssetId = async (assetId) => {
+// 3. Tickets for an asset, optionally restricted to supervised groups.
+export const getTicketsByAssetId = async (assetId, groupIds = null) => {
+  const params = [assetId];
+  let restriction = '';
+  if (Array.isArray(groupIds)) {
+    params.push(groupIds);
+    restriction = `AND t.maintenance_group_id = ANY($2::uuid[])`;
+  }
   const query = `
-    SELECT * FROM tickets
-    WHERE asset_id = $1
-    ORDER BY created_at DESC;
+    SELECT t.*, mg.name AS maintenance_group_name, mg.group_code AS maintenance_group_code
+    FROM tickets t
+    LEFT JOIN maintenance_groups mg ON t.maintenance_group_id = mg.id
+    WHERE t.asset_id = $1
+    ${restriction}
+    ORDER BY t.created_at DESC;
   `;
-  const { rows } = await pool.query(query, [assetId]);
+  const { rows } = await pool.query(query, params);
   return rows;
 };
 
-// 4. Calculate Active Contracted Maintenance Groups & Workload for a Ticket
+// 4. Contracted groups for an existing ticket (management dispatch options).
 export const getCandidateGroupsForTicket = async (ticketId) => {
-  // Resolve the ticket's category and owning organization_id via asset -> site -> region
-  const metaQuery = `
-    SELECT 
-      t.id AS ticket_id,
-      t.category,
-      t.status,
-      r.organization_id
-    FROM tickets t
-    JOIN assets a ON t.asset_id = a.id
-    JOIN sites s ON a.site_id = s.id
-    JOIN regions r ON s.region_id = r.id
-    WHERE t.id = $1;
-  `;
-  const { rows: metaRows } = await pool.query(metaQuery, [ticketId]);
+  const { rows: metaRows } = await pool.query(
+    `SELECT t.id AS ticket_id, t.category, t.status, r.organization_id
+     FROM tickets t
+     JOIN assets a ON t.asset_id = a.id
+     LEFT JOIN sites s ON a.site_id = s.id
+     LEFT JOIN regions r ON s.region_id = r.id
+     WHERE t.id = $1;`,
+    [ticketId]
+  );
   if (!metaRows[0]) return null;
 
   const { category, organization_id: organizationId } = metaRows[0];
 
-  // Fetch all 'ACTIVE' linked groups for this Organization, ranked by:
-  // 1) Specialty match (exact category match or general NULL specialty)
-  // 2) Lowest utilisation ratio (active tickets / total workers in group)
-  // 3) Lowest raw active ticket count
-  const groupsQuery = `
-    SELECT 
-      mg.id AS group_id,
-      mg.name AS group_name,
-      mg.group_type,
-      mg.specialty_category,
-      mg.group_code,
-      mg.contact_email,
-      mg.contact_phone,
-      COUNT(DISTINCT mgm.user_id)::int AS member_count,
-      COUNT(DISTINCT ta.id) FILTER (WHERE ta.status IN ('DISPATCHED', 'ACCEPTED'))::int AS active_tickets_count,
-      CASE 
-        WHEN COUNT(DISTINCT mgm.user_id) = 0 THEN 999999.0
-        ELSE ROUND(
-          COUNT(DISTINCT ta.id) FILTER (WHERE ta.status IN ('DISPATCHED', 'ACCEPTED'))::numeric 
-          / COUNT(DISTINCT mgm.user_id)::numeric, 
-          2
-        )
-      END AS workload_per_member,
-      CASE 
-        WHEN LOWER(mg.specialty_category) = LOWER($2) THEN 1
-        WHEN mg.specialty_category IS NULL THEN 2
-        ELSE 3
-      END AS specialty_rank
-    FROM organization_maintenance_groups omg
-    JOIN maintenance_groups mg ON omg.group_id = mg.id
-    LEFT JOIN maintenance_group_members mgm ON mg.id = mgm.group_id
-    LEFT JOIN ticket_assignments ta ON mg.id = ta.group_id
-    WHERE omg.organization_id = $1
-      AND omg.status = 'ACTIVE'
-    GROUP BY mg.id
-    ORDER BY 
-      specialty_rank ASC,
-      workload_per_member ASC,
-      active_tickets_count ASC;
-  `;
+  if (!organizationId) {
+    return { ticketId, category, organizationId: null, recommendedGroup: null, availableGroups: [] };
+  }
 
-  const { rows: groups } = await pool.query(groupsQuery, [organizationId, category]);
+  const { rows: groups } = await pool.query(
+    `SELECT
+        mg.id AS group_id, mg.name AS group_name, mg.group_type,
+        mg.specialty_category, mg.group_code, mg.contact_email, mg.contact_phone,
+        COUNT(t.id) FILTER (WHERE t.status NOT IN ('APPROVED','CANCELLED'))::int AS open_tickets_count,
+        CASE
+          WHEN LOWER(mg.specialty_category) = LOWER($2) THEN 1
+          WHEN mg.specialty_category IS NULL THEN 2
+          ELSE 3
+        END AS specialty_rank
+     FROM organization_maintenance_groups omg
+     JOIN maintenance_groups mg ON omg.group_id = mg.id
+     LEFT JOIN tickets t ON t.maintenance_group_id = mg.id
+     WHERE omg.organization_id = $1 AND omg.status = 'ACTIVE'
+     GROUP BY mg.id
+     ORDER BY specialty_rank ASC, open_tickets_count ASC;`,
+    [organizationId, category]
+  );
 
   return {
     ticketId,
@@ -200,124 +262,50 @@ export const getCandidateGroupsForTicket = async (ticketId) => {
   };
 };
 
-// 5. Stage 2: Cascading Dispatch (Management/Auto picks Group -> Server auto-picks least-busy Member)
-export const assignTicketTransaction = async ({ ticketId, groupId = null, assignedBy }) => {
+// 5. Reassign the responsible group (management). Prior assignment rows are
+// never modified; a new row is appended.
+export const assignTicketTransaction = async ({ ticketId, groupId, assignedBy }) => {
+  if (!groupId) throw new Error('GROUP_REQUIRED');
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Lock ticket row & get its category + owning organization_id
-    const ticketMetaQuery = `
-      SELECT 
-        t.status,
-        t.category,
-        r.organization_id
-      FROM tickets t
-      JOIN assets a ON t.asset_id = a.id
-      JOIN sites s ON a.site_id = s.id
-      JOIN regions r ON s.region_id = r.id
-      WHERE t.id = $1
-      FOR UPDATE OF t;
-    `;
-    const { rows: existing } = await client.query(ticketMetaQuery, [ticketId]);
-    if (!existing[0]) throw new Error('TICKET_NOT_FOUND');
+    const meta = await lockTicketMeta(client, ticketId);
+    assertTransition(meta.status, TICKET_STATUS.ASSIGNED);
+    await assertActiveGroupContract(client, meta.organization_id, groupId);
 
-    const { status: oldStatus, category, organization_id: organizationId } = existing[0];
-    let targetGroupId = groupId;
-
-    if (targetGroupId) {
-      // Mode B (Manual Group Selection): Verify this group has an ACTIVE handshake with the ticket's Organization
-      if (organizationId) {
-        const { rows: linkRows } = await client.query(
-          `SELECT id FROM organization_maintenance_groups
-           WHERE organization_id = $1 AND group_id = $2 AND status = 'ACTIVE';`,
-          [organizationId, targetGroupId]
-        );
-        if (!linkRows[0]) {
-          throw new Error('GROUP_NOT_CONTRACTED');
-        }
-      }
-    } else {
-      // Mode A (Full Auto-Assign): Server picks the best active contracted group
-      const autoGroupQuery = `
-        SELECT mg.id AS group_id
-        FROM organization_maintenance_groups omg
-        JOIN maintenance_groups mg ON omg.group_id = mg.id
-        LEFT JOIN maintenance_group_members mgm ON mg.id = mgm.group_id
-        LEFT JOIN ticket_assignments ta ON mg.id = ta.group_id
-        WHERE omg.organization_id = $1
-          AND omg.status = 'ACTIVE'
-        GROUP BY mg.id
-        HAVING COUNT(DISTINCT mgm.user_id) > 0
-        ORDER BY 
-          CASE 
-            WHEN LOWER(mg.specialty_category) = LOWER($2) THEN 1
-            WHEN mg.specialty_category IS NULL THEN 2
-            ELSE 3
-          END ASC,
-          (COUNT(DISTINCT ta.id) FILTER (WHERE ta.status IN ('DISPATCHED', 'ACCEPTED'))::numeric 
-           / GREATEST(COUNT(DISTINCT mgm.user_id), 1)::numeric) ASC,
-          COUNT(DISTINCT ta.id) FILTER (WHERE ta.status IN ('DISPATCHED', 'ACCEPTED')) ASC
-        LIMIT 1;
-      `;
-      const { rows: autoGroupRows } = await client.query(autoGroupQuery, [organizationId, category]);
-      if (!autoGroupRows[0]) {
-        throw new Error('NO_ACTIVE_MAINTENANCE_GROUP');
-      }
-      targetGroupId = autoGroupRows[0].group_id;
-    }
-
-    // Inside the selected Maintenance Group, auto-pick the least-busy worker
-    const leastBusyWorkerQuery = `
-      SELECT 
-        mgm.user_id,
-        u.full_name,
-        u.email,
-        u.phone_number,
-        COUNT(ta.id) FILTER (WHERE ta.status IN ('DISPATCHED', 'ACCEPTED'))::int AS active_load,
-        MAX(ta.assigned_at) AS last_assigned_at
-      FROM maintenance_group_members mgm
-      JOIN users u ON mgm.user_id = u.id
-      LEFT JOIN ticket_assignments ta ON mgm.user_id = ta.assignee_id
-      WHERE mgm.group_id = $1
-        AND COALESCE(LOWER(u.acc_status), 'active') = 'active'
-      GROUP BY mgm.user_id, u.full_name, u.email, u.phone_number
-      ORDER BY active_load ASC, last_assigned_at ASC NULLS FIRST
-      LIMIT 1;
-    `;
-    const { rows: workerRows } = await client.query(leastBusyWorkerQuery, [targetGroupId]);
-    const selectedWorker = workerRows[0] || null;
-    const assigneeId = selectedWorker ? selectedWorker.user_id : null;
-
-    // Insert assignment record with both group_id and auto-selected assignee_id
-    const { rows: assignmentRows } = await client.query(
-      `INSERT INTO ticket_assignments (ticket_id, group_id, assignee_id, assigned_by, status)
-       VALUES ($1, $2, $3, $4, 'DISPATCHED')
+    const { rows: updatedRows } = await client.query(
+      `UPDATE tickets
+       SET status = 'ASSIGNED',
+           maintenance_group_id = $1,
+           acknowledged_at = NULL,
+           acknowledged_by = NULL,
+           completed_at = NULL,
+           completed_by = NULL,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2
        RETURNING *;`,
-      [ticketId, targetGroupId, assigneeId, assignedBy]
-    );
-
-    const { rows: updatedTicket } = await client.query(
-      `UPDATE tickets 
-       SET status = 'ASSIGNED', updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $1 
-       RETURNING *;`,
-      [ticketId]
+      [groupId, ticketId]
     );
 
     await client.query(
-      `INSERT INTO ticket_audit_logs (ticket_id, actor_id, action_type, old_value, new_value)
-       VALUES ($1, $2, 'DISPATCHED_TO_GROUP', $3, 'ASSIGNED');`,
-      [ticketId, assignedBy, oldStatus]
+      `INSERT INTO ticket_assignments (ticket_id, group_id, assignee_id, assigned_by, status)
+       VALUES ($1, $2, NULL, $3, 'DISPATCHED');`,
+      [ticketId, groupId, assignedBy]
+    );
+
+    await insertAudit(
+      client,
+      ticketId,
+      assignedBy,
+      'GROUP_REASSIGNED',
+      meta.old_group_id ? String(meta.old_group_id) : null,
+      String(groupId)
     );
 
     await client.query('COMMIT');
-    return {
-      dispatchMode: groupId ? 'MANUAL_GROUP_AUTO_MEMBER' : 'FULL_AUTO',
-      ticket: updatedTicket[0],
-      assignment: assignmentRows[0],
-      assignedWorker: selectedWorker
-    };
+    return { dispatchMode: 'GROUP_REASSIGNED', ticket: updatedRows[0] };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -326,15 +314,44 @@ export const assignTicketTransaction = async ({ ticketId, groupId = null, assign
   }
 };
 
-// 6. Stage 3: Worker Starts Field Work (ASSIGNED -> IN_PROGRESS)
-export const startWorkTransaction = async ({ ticketId, workerId }) => {
+// 6. Supervisor acknowledgement (ASSIGNED -> ACKNOWLEDGED).
+export const acknowledgeTicketTransaction = async ({ ticketId, supervisorId }) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const ticket = await lockTicket(client, ticketId);
+    assertTransition(ticket.status, TICKET_STATUS.ACKNOWLEDGED);
 
-    const { rows: existing } = await client.query(`SELECT status FROM tickets WHERE id = $1 FOR UPDATE;`, [ticketId]);
-    if (!existing[0]) throw new Error('TICKET_NOT_FOUND');
-    const oldStatus = existing[0].status;
+    const { rows } = await client.query(
+      `UPDATE tickets
+       SET status = 'ACKNOWLEDGED',
+           acknowledged_at = CURRENT_TIMESTAMP,
+           acknowledged_by = $1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2
+       RETURNING *;`,
+      [supervisorId, ticketId]
+    );
+
+    await insertAudit(client, ticketId, supervisorId, 'ACKNOWLEDGED', ticket.status, TICKET_STATUS.ACKNOWLEDGED);
+
+    await client.query('COMMIT');
+    return rows[0];
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+// 7. Supervisor starts work (ACKNOWLEDGED -> IN_PROGRESS).
+export const startWorkTransaction = async ({ ticketId, supervisorId, note = null }) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const ticket = await lockTicket(client, ticketId);
+    assertTransition(ticket.status, TICKET_STATUS.IN_PROGRESS);
 
     await client.query(
       `UPDATE ticket_assignments
@@ -343,19 +360,24 @@ export const startWorkTransaction = async ({ ticketId, workerId }) => {
       [ticketId]
     );
 
-    const { rows: updatedTicket } = await client.query(
-      `UPDATE tickets SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *;`,
+    const { rows } = await client.query(
+      `UPDATE tickets SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 RETURNING *;`,
       [ticketId]
     );
 
-    await client.query(
-      `INSERT INTO ticket_audit_logs (ticket_id, actor_id, action_type, old_value, new_value)
-       VALUES ($1, $2, 'STATUS_CHANGED', $3, 'IN_PROGRESS');`,
-      [ticketId, workerId, oldStatus]
+    await insertAudit(
+      client,
+      ticketId,
+      supervisorId,
+      'STATUS_CHANGED',
+      ticket.status,
+      TICKET_STATUS.IN_PROGRESS,
+      note
     );
 
     await client.query('COMMIT');
-    return updatedTicket[0];
+    return rows[0];
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -364,20 +386,23 @@ export const startWorkTransaction = async ({ ticketId, workerId }) => {
   }
 };
 
-// 7. Stage 4: Worker Resolves & Submits for Verification (IN_PROGRESS -> PENDING_VERIFICATION)
-export const resolveTicketTransaction = async ({
+// 8. Supervisor reports completion (IN_PROGRESS -> PENDING_VERIFICATION).
+// Legacy IN_PROGRESS tickets may complete without an acknowledgement record.
+export const completeTicketTransaction = async ({
   ticketId,
-  workerId,
+  supervisorId,
   resolutionNotes,
   afterMediaUrl = null
 }) => {
+  if (!resolutionNotes || !String(resolutionNotes).trim()) {
+    throw new Error('RESOLUTION_NOTES_REQUIRED');
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-
-    const { rows: existing } = await client.query(`SELECT status FROM tickets WHERE id = $1 FOR UPDATE;`, [ticketId]);
-    if (!existing[0]) throw new Error('TICKET_NOT_FOUND');
-    const oldStatus = existing[0].status;
+    const ticket = await lockTicket(client, ticketId);
+    assertTransition(ticket.status, TICKET_STATUS.PENDING_VERIFICATION);
 
     await client.query(
       `UPDATE ticket_assignments
@@ -386,14 +411,16 @@ export const resolveTicketTransaction = async ({
       [ticketId]
     );
 
-    const { rows: updatedTicket } = await client.query(
+    const { rows } = await client.query(
       `UPDATE tickets
        SET status = 'PENDING_VERIFICATION',
            resolution_notes = $1,
+           completed_at = CURRENT_TIMESTAMP,
+           completed_by = $2,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2
+       WHERE id = $3
        RETURNING *;`,
-      [resolutionNotes, ticketId]
+      [resolutionNotes, supervisorId, ticketId]
     );
 
     let media = null;
@@ -402,19 +429,22 @@ export const resolveTicketTransaction = async ({
         `INSERT INTO ticket_media (ticket_id, media_url, media_type, evidence_stage, uploaded_by)
          VALUES ($1, $2, 'field_photo', 'AFTER', $3)
          RETURNING *;`,
-        [ticketId, afterMediaUrl, workerId]
+        [ticketId, afterMediaUrl, supervisorId]
       );
       media = mediaRows[0];
     }
 
-    await client.query(
-      `INSERT INTO ticket_audit_logs (ticket_id, actor_id, action_type, old_value, new_value)
-       VALUES ($1, $2, 'SUBMITTED_FOR_VERIFICATION', $3, 'PENDING_VERIFICATION');`,
-      [ticketId, workerId, oldStatus]
+    await insertAudit(
+      client,
+      ticketId,
+      supervisorId,
+      'SUBMITTED_FOR_VERIFICATION',
+      ticket.status,
+      TICKET_STATUS.PENDING_VERIFICATION
     );
 
     await client.query('COMMIT');
-    return { ticket: updatedTicket[0], afterMedia: media };
+    return { ticket: rows[0], afterMedia: media };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -423,41 +453,41 @@ export const resolveTicketTransaction = async ({
   }
 };
 
-// 8. Stage 5: Management Approves (or Rejects) Verification
-// If APPROVED -> Trigger automatically flips Asset back to 'CLEAR' + writes AssetMaintenanceLog!
-export const verifyTicketTransaction = async ({ ticketId, managerId, approved, rejectionReason = null }) => {
+// 9. Independent verification. Rejection returns to IN_PROGRESS and never
+// mutates assignment history. Completion actor/timestamp history is retained.
+export const verifyTicketTransaction = async ({ ticketId, verifierId, approved, rejectionReason = null }) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const ticket = await lockTicket(client, ticketId);
+    assertTransition(ticket.status, approved ? TICKET_STATUS.APPROVED : TICKET_STATUS.IN_PROGRESS);
 
-    const { rows: existing } = await client.query(`SELECT * FROM tickets WHERE id = $1 FOR UPDATE;`, [ticketId]);
-    if (!existing[0]) throw new Error('TICKET_NOT_FOUND');
-    const ticket = existing[0];
+    if (!approved && (!rejectionReason || !String(rejectionReason).trim())) {
+      throw new Error('REJECTION_REASON_REQUIRED');
+    }
 
-    const newStatus = approved ? 'APPROVED' : 'IN_PROGRESS';
+    const newStatus = approved ? TICKET_STATUS.APPROVED : TICKET_STATUS.IN_PROGRESS;
 
-    const { rows: updatedRows } = await client.query(
-      `UPDATE tickets
-       SET status = $1,
-           verified_by = $2,
-           verified_at = CURRENT_TIMESTAMP,
-           resolution_notes = CASE WHEN $3::text IS NOT NULL THEN resolution_notes || ' | [REJECTED]: ' || $3 ELSE resolution_notes END,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $4
-       RETURNING *;`,
-      [newStatus, managerId, rejectionReason, ticketId]
+    const { rows } = await client.query(
+      approved
+        ? `UPDATE tickets
+           SET status = 'APPROVED', verified_by = $1, verified_at = CURRENT_TIMESTAMP,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $2 RETURNING *;`
+        : `UPDATE tickets
+           SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1 RETURNING *;`,
+      approved ? [verifierId, ticketId] : [ticketId]
     );
 
-    await client.query(
-      `INSERT INTO ticket_audit_logs (ticket_id, actor_id, action_type, old_value, new_value)
-       VALUES ($1, $2, $3, $4, $5);`,
-      [
-        ticketId,
-        managerId,
-        approved ? 'MANAGEMENT_APPROVED' : 'MANAGEMENT_REJECTED',
-        ticket.status,
-        newStatus
-      ]
+    await insertAudit(
+      client,
+      ticketId,
+      verifierId,
+      approved ? 'MANAGEMENT_APPROVED' : 'MANAGEMENT_REJECTED',
+      ticket.status,
+      newStatus,
+      approved ? null : rejectionReason
     );
 
     if (approved) {
@@ -468,23 +498,184 @@ export const verifyTicketTransaction = async ({ ticketId, managerId, approved, r
           ticket.asset_id,
           ticket.id,
           ticket.category,
-          managerId,
-          ticket.resolution_notes || 'Ticket resolved and approved by management.'
+          verifierId,
+          ticket.resolution_notes || null
         ]
-      );
-    } else {
-      await client.query(
-        `UPDATE ticket_assignments SET status = 'REJECTED_BY_MGMT' WHERE ticket_id = $1;`,
-        [ticketId]
       );
     }
 
     await client.query('COMMIT');
-    return updatedRows[0];
+    return rows[0];
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
   } finally {
     client.release();
   }
+};
+
+// 10. Management cancellation.
+export const cancelTicketTransaction = async ({ ticketId, cancelledBy, reason }) => {
+  if (!reason || !String(reason).trim()) throw new Error('CANCELLATION_REASON_REQUIRED');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const ticket = await lockTicket(client, ticketId);
+    assertTransition(ticket.status, TICKET_STATUS.CANCELLED);
+
+    const { rows } = await client.query(
+      `UPDATE tickets SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 RETURNING *;`,
+      [ticketId]
+    );
+
+    await insertAudit(
+      client,
+      ticketId,
+      cancelledBy,
+      'TICKET_CANCELLED',
+      ticket.status,
+      TICKET_STATUS.CANCELLED,
+      reason
+    );
+
+    await client.query('COMMIT');
+    return rows[0];
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+// 11. Management reopen (APPROVED/CANCELLED -> ASSIGNED) with required group.
+export const reopenTicketTransaction = async ({ ticketId, reopenedBy, groupId, reason }) => {
+  if (!groupId) throw new Error('GROUP_REQUIRED');
+  if (!reason || !String(reason).trim()) throw new Error('REOPEN_REASON_REQUIRED');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const meta = await lockTicketMeta(client, ticketId);
+    assertTransition(meta.status, TICKET_STATUS.ASSIGNED);
+    await assertActiveGroupContract(client, meta.organization_id, groupId);
+
+    const { rows } = await client.query(
+      `UPDATE tickets
+       SET status = 'ASSIGNED',
+           maintenance_group_id = $1,
+           acknowledged_at = NULL,
+           acknowledged_by = NULL,
+           completed_at = NULL,
+           completed_by = NULL,
+           verified_by = NULL,
+           verified_at = NULL,
+           reopen_count = reopen_count + 1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2
+       RETURNING *;`,
+      [groupId, ticketId]
+    );
+
+    await client.query(
+      `INSERT INTO ticket_assignments (ticket_id, group_id, assignee_id, assigned_by, status)
+       VALUES ($1, $2, NULL, $3, 'DISPATCHED');`,
+      [ticketId, groupId, reopenedBy]
+    );
+
+    await insertAudit(
+      client,
+      ticketId,
+      reopenedBy,
+      'TICKET_REOPENED',
+      meta.status,
+      TICKET_STATUS.ASSIGNED,
+      reason
+    );
+
+    await client.query('COMMIT');
+    return rows[0];
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+// 12. Supervisor queue, scoped to the caller's supervised groups.
+export const listTicketQueue = async ({
+  groupIds,
+  status = null,
+  siteId = null,
+  priority = null,
+  search = null,
+  page = 1,
+  limit = 20
+}) => {
+  const safePage = Math.max(1, Number(page) || 1);
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
+  const offset = (safePage - 1) * safeLimit;
+
+  const params = [groupIds];
+  const conditions = [`t.maintenance_group_id = ANY($1::uuid[])`];
+
+  if (status) {
+    params.push(status);
+    conditions.push(`t.status = $${params.length}`);
+  }
+  if (siteId) {
+    params.push(siteId);
+    conditions.push(`a.site_id = $${params.length}`);
+  }
+  if (priority) {
+    params.push(priority.toUpperCase());
+    conditions.push(`t.priority = $${params.length}`);
+  }
+  if (search) {
+    params.push(`%${search}%`);
+    conditions.push(
+      `(t.ticket_number ILIKE $${params.length} OR a.name_identifier ILIKE $${params.length} OR t.description ILIKE $${params.length})`
+    );
+  }
+
+  const where = conditions.join(' AND ');
+
+  const countQuery = `
+    SELECT count(*)::int AS total
+    FROM tickets t
+    JOIN assets a ON t.asset_id = a.id
+    WHERE ${where};
+  `;
+  const { rows: countRows } = await pool.query(countQuery, params);
+  const total = countRows[0]?.total || 0;
+
+  const listParams = [...params, safeLimit, offset];
+  const listQuery = `
+    SELECT
+      t.id, t.ticket_number, t.asset_id, t.category, t.priority, t.status,
+      t.description, t.created_at, t.updated_at, t.maintenance_group_id,
+      t.acknowledged_at, t.completed_at,
+      a.name_identifier AS asset_name,
+      s.name AS site_name, s.site_code,
+      mg.name AS maintenance_group_name, mg.group_code AS maintenance_group_code
+    FROM tickets t
+    JOIN assets a ON t.asset_id = a.id
+    LEFT JOIN sites s ON a.site_id = s.id
+    LEFT JOIN maintenance_groups mg ON t.maintenance_group_id = mg.id
+    WHERE ${where}
+    ORDER BY t.created_at DESC
+    LIMIT $${listParams.length - 1} OFFSET $${listParams.length};
+  `;
+  const { rows } = await pool.query(listQuery, listParams);
+
+  return {
+    tickets: rows,
+    total,
+    page: safePage,
+    limit: safeLimit,
+    totalPages: Math.ceil(total / safeLimit)
+  };
 };

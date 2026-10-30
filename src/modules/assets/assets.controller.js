@@ -1,5 +1,11 @@
 import * as assetsService from './assets.service.js';
 import * as assetsModel from './assets.model.js';
+import {
+  assertAssetAccess,
+  assertCaptureAccess,
+  assertHotspotAccess,
+  sendAuthorizationError
+} from '../authorization/resource-access.js';
 
 // 1. GET /api/assets/:assetId/digital-twin
 export const getDigitalTwinView = async (req, res) => {
@@ -7,9 +13,12 @@ export const getDigitalTwinView = async (req, res) => {
     const { assetId } = req.params;
     const { captureId, targetDate } = req.query;
 
+    await assertAssetAccess(req.user, assetId);
+
     const data = await assetsService.fetchDigitalTwinData(assetId, { captureId, targetDate });
     res.status(200).json(data);
   } catch (error) {
+    if (sendAuthorizationError(res, error)) return;
     if (error.message === 'ASSET_NOT_FOUND') {
       return res.status(404).json({ error: 'Asset not found.' });
     }
@@ -23,11 +32,13 @@ export const upload360Capture = async (req, res) => {
   try {
     const { assetId } = req.params;
     const { capturedAt } = req.body;
-    const userId = req.user?.userId || req.user?.id || null;
+    const userId = req.user.userId;
 
     if (!req.file) {
       return res.status(400).json({ error: 'No 360 image file provided.' });
     }
+
+    await assertAssetAccess(req.user, assetId);
 
     const asset = await assetsModel.getAssetWithSiteDetails(assetId);
     if (!asset) {
@@ -42,6 +53,7 @@ export const upload360Capture = async (req, res) => {
       capture: newCapture
     });
   } catch (error) {
+    if (sendAuthorizationError(res, error)) return;
     console.error('Error uploading 360 capture:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -52,7 +64,7 @@ export const saveHotspot = async (req, res) => {
   try {
     const { captureId } = req.params;
     const { targetAssetId, pitch, yaw } = req.body;
-    const userId = req.user?.userId || req.user?.id || null;
+    const userId = req.user.userId;
 
     if (!targetAssetId || pitch === undefined || yaw === undefined) {
       return res.status(400).json({ error: 'targetAssetId, pitch, and yaw are required.' });
@@ -68,6 +80,9 @@ export const saveHotspot = async (req, res) => {
       return res.status(400).json({ error: 'Yaw must be a valid angle between -180 and 180.' });
     }
 
+    await assertCaptureAccess(req.user, captureId);
+    await assertAssetAccess(req.user, targetAssetId);
+
     const hotspot = await assetsService.addOrUpdateHotspot(captureId, {
       targetAssetId,
       pitch: numPitch,
@@ -80,6 +95,7 @@ export const saveHotspot = async (req, res) => {
       hotspot
     });
   } catch (error) {
+    if (sendAuthorizationError(res, error)) return;
     if (error.message === 'CAPTURE_NOT_FOUND') {
       return res.status(404).json({ error: 'Source 360 capture not found.' });
     }
@@ -101,6 +117,9 @@ export const saveHotspot = async (req, res) => {
 export const deleteHotspot = async (req, res) => {
   try {
     const { hotspotId } = req.params;
+
+    await assertHotspotAccess(req.user, hotspotId);
+
     const deleted = await assetsModel.removeHotspot(hotspotId);
 
     if (!deleted) {
@@ -109,6 +128,7 @@ export const deleteHotspot = async (req, res) => {
 
     res.status(200).json({ message: 'Hotspot removed successfully.' });
   } catch (error) {
+    if (sendAuthorizationError(res, error)) return;
     console.error('Error deleting hotspot:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -119,6 +139,8 @@ export const toggleIgnoreWarning = async (req, res) => {
   try {
     const { captureId } = req.params;
     const { ignore } = req.body;
+
+    await assertCaptureAccess(req.user, captureId);
 
     const ignoreBool = ignore !== undefined ? Boolean(ignore) : true;
     const updated = await assetsModel.setCaptureWarningIgnore(captureId, ignoreBool);
@@ -134,6 +156,7 @@ export const toggleIgnoreWarning = async (req, res) => {
       capture: updated
     });
   } catch (error) {
+    if (sendAuthorizationError(res, error)) return;
     console.error('Error updating warning preference:', error);
     res.status(500).json({ error: 'Internal server error' });
   }

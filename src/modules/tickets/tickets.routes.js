@@ -5,37 +5,47 @@ import {
   listAssetTickets,
   getDispatchOptions,
   assignTicket,
-  startTicketWork,
+  acknowledgeTicketHandler,
+  startTicketWorkHandler,
   resolveTicket,
-  verifyTicket
+  verifyTicket,
+  cancelTicketHandler,
+  reopenTicketHandler,
+  getTicketQueue
 } from './tickets.controller.js';
 import { requireAuth } from '../../middlewares/auth.guard.js';
+import { requireRole } from '../../middlewares/rbac.guard.js';
 import { upload } from '../../middlewares/upload.guard.js';
+import { MANAGEMENT_ROLES } from '../authorization/policy.js';
 
 const router = Router();
 
-// Stage 1: Create Ticket (supports optional 'ticketMedia' BEFORE photo upload)
-router.post('/', requireAuth, upload.single('ticketMedia'), createTicket);
+// Management: create with a required maintenance group.
+router.post('/', requireAuth, requireRole(MANAGEMENT_ROLES), upload.single('ticketMedia'), createTicket);
 
-// Get all tickets for a specific asset
+// Supervisor queue (must precede /:ticketId).
+router.get('/queue', requireAuth, getTicketQueue);
+
+// Tickets for an asset.
 router.get('/asset/:assetId', requireAuth, listAssetTickets);
 
-// Stage 2A: Get Auto-Suggested Maintenance Group + All Active Contracted Groups for a ticket
-router.get('/:ticketId/dispatch-options', requireAuth, getDispatchOptions);
+// Management dispatch options.
+router.get('/:ticketId/dispatch-options', requireAuth, requireRole(MANAGEMENT_ROLES), getDispatchOptions);
 
-// Get full details of a single ticket
+// Ticket detail.
 router.get('/:ticketId', requireAuth, getTicket);
 
-// Stage 2B: Dispatch ticket (Send {} for Full Auto-Assign, or { "groupId": "..." } for Manual Group + Auto Worker)
-router.post('/:ticketId/assign', requireAuth, assignTicket);
+// Management: reassign the responsible group.
+router.post('/:ticketId/assign', requireAuth, requireRole(MANAGEMENT_ROLES), assignTicket);
 
-// Stage 3: Technician accepts and starts repair work
-router.patch('/:ticketId/start', requireAuth, startTicketWork);
-
-// Stage 4: Technician submits repair + optional 'ticketMedia' AFTER photo -> PENDING_VERIFICATION
+// Group supervisor actions (authority enforced from maintenance_group_supervisors).
+router.post('/:ticketId/acknowledge', requireAuth, acknowledgeTicketHandler);
+router.patch('/:ticketId/start', requireAuth, startTicketWorkHandler);
 router.patch('/:ticketId/resolve', requireAuth, upload.single('ticketMedia'), resolveTicket);
 
-// Stage 5: Management approves (or rejects) -> APPROVED -> Asset pin turns Green (CLEAR)!
-router.patch('/:ticketId/verify', requireAuth, verifyTicket);
+// Independent verification and management terminal actions.
+router.patch('/:ticketId/verify', requireAuth, requireRole(MANAGEMENT_ROLES), verifyTicket);
+router.patch('/:ticketId/cancel', requireAuth, requireRole(MANAGEMENT_ROLES), cancelTicketHandler);
+router.patch('/:ticketId/reopen', requireAuth, requireRole(MANAGEMENT_ROLES), reopenTicketHandler);
 
 export default router;

@@ -17,8 +17,8 @@ export const fetchTicketDetails = async (ticketId) => {
   return ticket;
 };
 
-export const fetchAssetTickets = async (assetId) => {
-  return await ticketsModel.getTicketsByAssetId(assetId);
+export const fetchAssetTickets = async (assetId, groupIds = null) => {
+  return await ticketsModel.getTicketsByAssetId(assetId, groupIds);
 };
 
 export const fetchDispatchOptions = async (ticketId) => {
@@ -29,18 +29,34 @@ export const fetchDispatchOptions = async (ticketId) => {
   return options;
 };
 
-export const dispatchTicket = async (payload) => {
+export const reassignTicket = async (payload) => {
   return await ticketsModel.assignTicketTransaction(payload);
 };
 
-export const acceptAndStartTicket = async (payload) => {
+export const acknowledgeTicket = async (payload) => {
+  return await ticketsModel.acknowledgeTicketTransaction(payload);
+};
+
+export const startTicketWork = async (payload) => {
   return await ticketsModel.startWorkTransaction(payload);
 };
 
-export const submitForVerification = async (payload) => {
-  return await ticketsModel.resolveTicketTransaction(payload);
+export const completeTicket = async (payload) => {
+  return await ticketsModel.completeTicketTransaction(payload);
 };
 
-export const managementVerifyTicket = async (payload) => {
+export const verifierDecision = async (payload) => {
   return await ticketsModel.verifyTicketTransaction(payload);
+};
+
+export const cancelTicket = async (payload) => {
+  return await ticketsModel.cancelTicketTransaction(payload);
+};
+
+export const reopenTicket = async (payload) => {
+  return await ticketsModel.reopenTicketTransaction(payload);
+};
+
+export const fetchTicketQueue = async (payload) => {
+  return await ticketsModel.listTicketQueue(payload);
 };

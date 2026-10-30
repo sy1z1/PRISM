@@ -1,0 +1,48 @@
+export const TICKET_STATUS = Object.freeze({
+  OPEN: 'OPEN',
+  ASSIGNED: 'ASSIGNED',
+  ACKNOWLEDGED: 'ACKNOWLEDGED',
+  IN_PROGRESS: 'IN_PROGRESS',
+  PENDING_VERIFICATION: 'PENDING_VERIFICATION',
+  APPROVED: 'APPROVED',
+  CANCELLED: 'CANCELLED'
+});
+
+export const TERMINAL_STATUSES = Object.freeze([
+  TICKET_STATUS.APPROVED,
+  TICKET_STATUS.CANCELLED
+]);
+
+// Allowed state changes enforced server-side. Management reassignment and
+// cancellation/reopen are separate operations with their own preconditions.
+export const TRANSITIONS = Object.freeze({
+  [TICKET_STATUS.OPEN]: [TICKET_STATUS.ASSIGNED, TICKET_STATUS.CANCELLED],
+  [TICKET_STATUS.ASSIGNED]: [
+    TICKET_STATUS.ACKNOWLEDGED,
+    TICKET_STATUS.ASSIGNED,
+    TICKET_STATUS.CANCELLED
+  ],
+  [TICKET_STATUS.ACKNOWLEDGED]: [
+    TICKET_STATUS.IN_PROGRESS,
+    TICKET_STATUS.ASSIGNED,
+    TICKET_STATUS.CANCELLED
+  ],
+  [TICKET_STATUS.IN_PROGRESS]: [
+    TICKET_STATUS.PENDING_VERIFICATION,
+    TICKET_STATUS.CANCELLED
+  ],
+  [TICKET_STATUS.PENDING_VERIFICATION]: [
+    TICKET_STATUS.APPROVED,
+    TICKET_STATUS.IN_PROGRESS,
+    TICKET_STATUS.CANCELLED
+  ],
+  [TICKET_STATUS.APPROVED]: [TICKET_STATUS.ASSIGNED],
+  [TICKET_STATUS.CANCELLED]: [TICKET_STATUS.ASSIGNED]
+});
+
+export const isTerminalStatus = (status) => TERMINAL_STATUSES.includes(status);
+
+export const canTransition = (fromStatus, toStatus) => {
+  const allowed = TRANSITIONS[fromStatus];
+  return Array.isArray(allowed) && allowed.includes(toStatus);
+};

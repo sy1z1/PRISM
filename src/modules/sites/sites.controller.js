@@ -2,10 +2,28 @@ import * as sitesService from './sites.service.js';
 import { pool } from '../../config/db.js';
 import fs from 'fs';
 import path from 'path';
+import { getOrganizationScope } from '../authorization/policy.js';
+import {
+  AuthorizationError,
+  assertAssetAccess,
+  sendAuthorizationError
+} from '../authorization/resource-access.js';
+
+const resolveScope = (res, user) => {
+  const scope = getOrganizationScope(user);
+  if (scope === undefined) {
+    res.status(403).json({ error: 'Forbidden: Account has no organization assigned.' });
+    return { denied: true };
+  }
+  return { denied: false, scope };
+};
 
 export const getRegions = async (req, res) => {
   try {
-    const regions = await sitesService.fetchRegionList();
+    const { denied, scope } = resolveScope(res, req.user);
+    if (denied) return;
+
+    const regions = await sitesService.fetchRegionList(scope);
     res.status(200).json({ regions });
   } catch (error) {
     console.error('Error fetching regions:', error);
@@ -21,7 +39,10 @@ export const getMacroData = async (req, res) => {
       return res.status(400).json({ error: 'Query parameter "region" is required.' });
     }
 
-    const macroData = await sitesService.fetchMacroMapData(region);
+    const { denied, scope } = resolveScope(res, req.user);
+    if (denied) return;
+
+    const macroData = await sitesService.fetchMacroMapData(region, scope);
     res.status(200).json(macroData);
   } catch (error) {
     if (error.message === 'REGION_NOT_FOUND') {
@@ -40,7 +61,10 @@ export const getMicroData = async (req, res) => {
       return res.status(400).json({ error: 'Site ID parameter is required.' });
     }
 
-    const microData = await sitesService.fetchMicroMapData(siteId);
+    const { denied, scope } = resolveScope(res, req.user);
+    if (denied) return;
+
+    const microData = await sitesService.fetchMicroMapData(siteId, scope);
     res.status(200).json(microData);
   } catch (error) {
     console.error('Error fetching micro map data:', error);
@@ -55,6 +79,8 @@ export const uploadThumbnail = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No image file provided.' });
     }
+
+    await assertAssetAccess(req.user, assetId);
 
     const localFileUrl = `/uploads/assets/thumbnails/${req.file.filename}`;
 
@@ -98,6 +124,7 @@ export const uploadThumbnail = async (req, res) => {
     });
 
   } catch (error) {
+    if (sendAuthorizationError(res, error)) return;
     console.error('Upload error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
